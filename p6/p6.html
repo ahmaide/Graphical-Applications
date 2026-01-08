@@ -1,0 +1,902 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <title>UNM CS 412/512 HW6</title>
+  <style>
+    body { 
+      background: #111; 
+      color: #ccc; 
+      font-family: monospace; 
+    }
+    textarea { 
+      background: #222; 
+      color: #0f0; 
+      font: 14px monospace; 
+      width: 400px; 
+      height: 250px; 
+    }
+    canvas { 
+      border: 1px solid #444; 
+    }
+    #controls { 
+      margin-top: 15px; 
+      padding: 10px; 
+      border: 1px solid #444; 
+      border-radius: 5px; 
+      background: #222; 
+    }
+    .joint-control { 
+      margin-bottom: 10px; 
+      padding: 5px; 
+      border-left: 3px solid #00ffaa; 
+    }
+    #controls label, #controls input { 
+      margin-right: 10px; 
+      margin-bottom: 5px; 
+      display: inline-block; 
+    }
+    #controls input[type="range"] { 
+      width: 150px; 
+      vertical-align: middle; 
+    }
+    #lighting-controls { 
+      margin-top: 10px; 
+      display: flex; 
+      flex-wrap: wrap; 
+      gap: 10px; }
+  </style>
+</head>
+
+<body>
+  <h2>Robotic Arm + Hierarchical Model + Ray-Traced Self-Shadow</h2>
+  <p>Use mouse to drag and rotate the scene. Use arrow keys and w, s keys to move the camera.</p>
+  <p>PLease move the shoulder joint before the base joint to see the base joints movement effects.</p>
+  <p>Note that shadowing is also included</p>
+  <p>The reflection of the refraction isn't impelemneted (it only shows the yellow wrist from where the intersection ends</p>
+  <p>1 Light Source is implemented</p>
+
+  <div style="display:flex;gap:10px;align-items:flex-start;">
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <div>
+        <b>Vertex Shader</b><br>
+        <textarea id="vertEditor"></textarea>
+      </div>
+      <div>
+        <b>Fragment Shader</b><br>
+        <textarea id="fragEditor"></textarea>
+      </div>
+    </div>
+    <div>
+      <canvas id="glcanvas" width="600" height="600"></canvas>
+      <div id="controls">
+        <div class="joint-control">
+          <b>Base Joint (Level 1 Movement)</b>
+          <label for="joint1-slider">Y-Rotation:</label>
+          <input type="range" id="joint1-slider" data-joint-id="joint1" min="-180" max="180" value="0">
+        </div>
+        <div class="joint-control">
+          <b>Shoulder Joint (Level 2 Movement)</b>
+          <label for="joint2-slider">X-Rotation:</label>
+          <input type="range" id="joint2-slider" data-joint-id="joint2" min="-15" max="15" value="0">
+        </div>
+        <div class="joint-control">
+          <b>Scene Lighting</b>
+          <label for="light-intensity-slider">Intensity (0.0=Dark, 1.0=Max):</label>
+          <input type="range" id="light-intensity-slider" min="0.0" max="0.8" step="0.01" value="1.0">
+        </div>
+        <div class="joint-control">
+          <b>Shoulder Material</b>
+          <label for="shoulder-ior-slider">Transparency & Refraction:</label>
+          <input type="range" id="shoulder-ior-slider" min="1.0" max="2.0" step="0.01" value="1.8">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- VERTEX SHADER -->
+  <script id="vertex-shader" type="x-shader/x-vertex">#version 300 es
+in vec3 aPosition;
+in vec3 aColor;
+in vec3 aNormal;
+
+uniform mat4 uModelViewMatrix;
+uniform mat4 uProjectionMatrix;
+uniform mat4 uModelTransformationMatrix;
+uniform mat4 uNormalMatrix;
+
+out vec3 vColor;
+out vec3 vNormal; 
+out vec3 vPosition;
+out vec3 vWorldPos;  
+
+void main() {
+  vec4 worldPosition = uModelTransformationMatrix * vec4(aPosition, 1.0);
+  gl_Position = uProjectionMatrix * uModelViewMatrix * worldPosition;
+  
+  vNormal   = mat3(uNormalMatrix) * aNormal; 
+  vPosition = (uModelViewMatrix * worldPosition).xyz; 
+  vWorldPos = worldPosition.xyz;
+  vColor    = aColor;
+}
+</script>
+
+  <!-- FRAGMENT SHADER -->
+ <script id="fragment-shader" type="x-shader/x-fragment">#version 300 es
+precision mediump float;
+
+in vec3 vColor; 
+in vec3 vNormal;
+in vec3 vPosition;
+in vec3 vWorldPos;
+
+uniform vec3 uCameraPos;
+uniform mat4 uViewRotationMatrix;
+uniform int   uObjectIndex;
+uniform vec3  uAmbientColor;
+uniform vec3  uLightPos;
+uniform vec3  uLightColor; 
+
+uniform bool  uEnableShadow;
+uniform vec3  uLightWorldPos;
+
+uniform vec3 uOrbiterWorldPos;
+
+const int MAX_SHADOW_OBJECTS = 8;
+uniform mat4 uShadowInvWorld[MAX_SHADOW_OBJECTS];
+uniform int  uShadowType[MAX_SHADOW_OBJECTS];
+uniform int  uShadowCount;
+
+uniform float uShoulderRef;
+
+out vec4 fragColor;
+const int MAX_REFLECTION_DEPTH = 3;
+
+const int SHAPE_SPHERE   = 0;
+const int SHAPE_CYLINDER = 1;
+const int SHAPE_CUBE = 2;
+
+bool intersectSphere(vec3 ro, vec3 rd, out float tHit) {
+  float a = dot(rd, rd);
+  float b = 2.0 * dot(ro, rd);
+  float c = dot(ro, ro) - 1.0;
+  float disc = b*b - 4.0*a*c;
+  if (disc < 0.0) 
+    return false;
+  float sdisc = sqrt(disc);
+  float t0 = (-b - sdisc) / (2.0 * a);
+  float t1 = (-b + sdisc) / (2.0 * a);
+  float t = 1e9;
+  if (t0 > 0.0) 
+    t = t0;
+  if (t1 > 0.0 && t1 < t) 
+    t = t1;
+  if (t == 1e9)  
+    return false;
+  tHit = t;
+  return true;
+}
+
+bool intersectCylinderY(vec3 ro, vec3 rd, out float tHit) {
+  float a = rd.x*rd.x + rd.z*rd.z;
+  float b = 2.0 * (ro.x*rd.x + ro.z*rd.z);
+  float c = ro.x*ro.x + ro.z*ro.z - 1.0;
+
+  if (abs(a) < 1e-6) return false;
+  
+  float disc = b*b - 4.0*a*c;
+  if (disc < 0.0) return false;
+
+  float sdisc = sqrt(disc);
+  float t0 = (-b - sdisc) / (2.0 * a);
+  float t1 = (-b + sdisc) / (2.0 * a);
+  float t = 1e9;
+  if (t0 > 0.0) t = t0;
+  if (t1 > 0.0 && t1 < t) t = t1;
+  if (t == 1e9) return false;
+
+  float y = ro.y + t * rd.y;
+  if (y < -0.5 || y > 0.5) return false;
+
+  tHit = t;
+  return true;
+}
+
+
+
+bool intersectCube(vec3 ro, vec3 rd, out float tHit) {
+    float tMin = -1e9;
+    float tMax =  1e9;
+
+    for (int i = 0; i < 3; i++) {
+        float invD = 1.0 / rd[i];
+        float t0 = (-1.0 - ro[i]) * invD;
+        float t1 = ( 1.0 - ro[i]) * invD;
+        if (invD < 0.0) {
+            float tmp = t0;
+            t0 = t1;
+            t1 = tmp;
+        }
+        tMin = max(tMin, t0);
+        tMax = min(tMax, t1);
+        if (tMax < tMin) return false;
+    }
+
+    tHit = tMin;
+    return tHit > 0.001;
+}
+
+bool computeShadow(vec3 worldPos) {
+  if (!uEnableShadow) 
+    return false;
+  if (uObjectIndex != 0 && uObjectIndex != 7) 
+    return false;
+
+  vec3 Nw = normalize(vNormal);
+  if (Nw.y < 0.5) 
+    return false;
+
+  if (uObjectIndex == 0) {
+      vec3 Nw = normalize(vNormal);
+      if (Nw.y < 0.5) 
+        return false;
+  }
+
+  vec3 toLight = uLightWorldPos - worldPos;
+  float distToLight = length(toLight);
+  if (distToLight <= 0.0001) 
+    return false;
+
+  vec3 dirWorld = normalize(toLight);
+  vec3 originWorld = worldPos + dirWorld * 0.01;
+
+  for (int i = 0; i < MAX_SHADOW_OBJECTS; ++i) {
+    if (i >= uShadowCount) 
+      break;
+
+    mat4 invM = uShadowInvWorld[i];
+    vec4 ro4 = invM * vec4(originWorld, 1.0);
+    vec4 rd4 = invM * vec4(dirWorld, 0.0);
+    vec3 ro = ro4.xyz;
+    vec3 rd = normalize(rd4.xyz);
+
+    float tHit;
+    bool hit = false;
+
+    if (uShadowType[i] == SHAPE_SPHERE) {
+      hit = intersectSphere(ro, rd, tHit);
+    } else if (uShadowType[i] == SHAPE_CYLINDER) {
+      hit = intersectCylinderY(ro, rd, tHit);
+    } else if (uShadowType[i] == SHAPE_CUBE) {
+      hit = intersectCube(ro, rd, tHit);
+    }
+
+    if (hit && tHit > 0.001 && tHit < distToLight) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+
+float schlick(float cosine, float ref_idx) {
+    float r0 = (1.0 - ref_idx) / (1.0 + ref_idx);
+    r0 = r0 * r0;
+    return r0 + (1.0 - r0) * pow(1.0 - cosine, 5.0);
+}
+
+vec3 getObjectColor(int index) {
+    if (index == 0)
+      return vec3(1.0, 0.5, 0.0); 
+    if (index == 1) 
+      return vec3(0.0, 1.0, 0.0); 
+    if (index == 2) 
+      return vec3(1.0, 1.0, 0.0); 
+    if (index == 3) 
+      return vec3(0.0, 0.0, 1.0); 
+    return vec3(1.0);                              
+}
+
+vec3 traceReflection(vec3 origin, vec3 direction, float maxDist)
+{
+    vec3 color = vec3(0.0);
+    vec3 throughput = vec3(1.0);
+    
+
+    for(int depth = 0; depth < MAX_REFLECTION_DEPTH; depth++)
+    {
+        float closest = 1e9;
+        int hit = -1;
+        float tMin = 0.0;
+        mat4 hitInvM = mat4(0.0);
+        int hitShapeType = -1;
+
+        for (int i=0; i<uShadowCount; i++)
+        {
+            mat4 inv = uShadowInvWorld[i];
+            vec3 ro = (inv * vec4(origin,1.0)).xyz;
+            vec3 rd = normalize((inv * vec4(direction,0.0)).xyz);
+
+            float t;
+            bool ok = false;
+
+            if(uShadowType[i]==SHAPE_SPHERE)   
+              ok = intersectSphere(ro,rd,t);
+            else if(uShadowType[i]==SHAPE_CYLINDER) 
+              ok = intersectCylinderY(ro,rd,t);
+            else if(uShadowType[i]==SHAPE_CUBE)     
+              ok = intersectCube(ro,rd,t);
+
+            if(ok && t>0.001 && t<closest){
+                closest = t;
+                hit = i;
+                tMin = t;
+                hitInvM = inv;
+                hitShapeType = uShadowType[i];
+            }
+        }
+        if(hit < 0)   
+          return color; 
+
+        if (tMin > maxDist) {
+          return color; 
+        }
+
+        vec3 p = origin + direction * tMin;
+        vec4 pHitLocal = hitInvM * vec4(p, 1.0);
+        vec3 NLocal;
+
+        if (hitShapeType == SHAPE_SPHERE) {
+            NLocal = normalize(pHitLocal.xyz); 
+        } else if (hitShapeType == SHAPE_CYLINDER) {
+            NLocal = normalize(vec3(pHitLocal.x, 0.0, pHitLocal.z));
+        } else if (hitShapeType == SHAPE_CUBE) {
+            vec3 localPos = pHitLocal.xyz;
+            NLocal = vec3(0.0);
+            if (abs(localPos.x) > 0.999) {
+                NLocal.x = sign(localPos.x);
+            } else if (abs(localPos.y) > 0.999) {
+                NLocal.y = sign(localPos.y);
+            } else if (abs(localPos.z) > 0.999) {
+                NLocal.z = sign(localPos.z);
+            }
+             NLocal = normalize(NLocal); 
+           } else {
+             return color;
+        }
+
+        
+        vec3 NWorld = normalize(mat3(transpose(hitInvM)) * NLocal);
+        vec3 hitColor = getObjectColor(hit);
+
+        throughput *= 0.9;
+        color += throughput * hitColor;
+        direction = reflect(direction, NWorld);
+        origin = p + NWorld * 0.0000001;;
+        
+        maxDist -= tMin;    
+    }
+    return color;
+}
+
+void swap(inout float a, inout float b) {
+    float temp = a;
+    a = b;
+    b = temp;
+}
+
+vec3 refractRay(vec3 I, vec3 N, float eta) {
+    float cosi = clamp(dot(I, N), -1.0, 1.0);
+    float etai = 1.0;
+    float etat = eta;
+    if (cosi < 0.0) 
+      cosi = -cosi;
+    else 
+      swap(etai, etat); N = -N;
+    float eta_ratio = etai / etat;
+    float k = 1.0 - eta_ratio * eta_ratio * (1.0 - cosi * cosi);
+    return k < 0.0 ? vec3(0.0) : eta_ratio * I + (eta_ratio * cosi - sqrt(k)) * N;
+}
+
+void main() {
+  vec3 diffuseMaterial;
+  vec3 specularMaterial;
+  float shininess;
+
+  float maxBaseLight = 1.5;
+  float lightScale = clamp(uLightColor.r / maxBaseLight, 0.0, 1.0);
+
+  if (uObjectIndex == 0) {
+      diffuseMaterial = vec3(0.0, 1.0, 1.0);
+      specularMaterial = vec3(0.0); 
+      shininess = 0.0;
+  }
+  else if (uObjectIndex == 1) {
+      diffuseMaterial = vec3(1.0, 0.3, 0.0); 
+      specularMaterial = vec3(0.5, 0.5, 0.5); 
+      shininess = 300.0;
+  }
+  else if (uObjectIndex == 2) {
+      diffuseMaterial = vec3(1.0, 1.0, 0.0);
+      specularMaterial = vec3(0.0); 
+      shininess = 1.0;
+  }
+  else if (uObjectIndex == 3) {
+      diffuseMaterial = vec3(0.0, 1.0, 0.0);
+      specularMaterial = vec3(1.0);
+      shininess = 128.0;
+  }
+  else if (uObjectIndex == 4) {
+      diffuseMaterial = vec3(0.0, 0.0, 1.0);
+      specularMaterial = vec3(0.8, 0.8, 0.8);
+      shininess = 128.0;
+  }
+  else {
+      diffuseMaterial = vec3(1.0);
+      specularMaterial = vec3(0.0);
+      shininess = 1.0;
+  }
+
+  vec3 N = normalize(vNormal);
+  vec3 V = normalize(-vPosition);
+  vec3 L = normalize(uLightPos - vPosition);
+
+  vec3 ambient = uAmbientColor * diffuseMaterial;
+  float diffIntensity = max(dot(N, L), 0.0);
+  vec3 diffuse = uLightColor * diffuseMaterial * diffIntensity;
+
+  vec3 R = reflect(-L, N);
+  float specIntensity = pow(max(dot(V, R), 0.0), shininess);
+  vec3 specular = uLightColor * specularMaterial * specIntensity;
+
+  bool inShadow = computeShadow(vWorldPos);
+  if (inShadow) {
+      float shadowDarkness = 1.0 - (0.85 * lightScale);
+      diffuse *= shadowDarkness;
+      specular = vec3(0.0);
+  }
+
+  float alpha = 1.0;
+
+if (uObjectIndex == 1) {
+    float ref_idx = uShoulderRef; 
+    vec3 V_inc = normalize(uCameraPos - vWorldPos); 
+    vec3 N_hit = N;
+    float cosTheta = dot(-V_inc, N_hit);
+    float schlick_value = schlick(cosTheta, ref_idx); 
+    vec3 reflected_direction = reflect(-V_inc, N_hit);
+    vec3 reflected_color = traceReflection(vWorldPos + N_hit * 0.001, reflected_direction, 100.0);
+    vec3 finalTracedColor;
+    vec3 refracted_direction = refractRay(-V_inc, N_hit, ref_idx);
+    float minAlpha = 0.4;
+    float maxAlpha =0.8;
+    if (length(refracted_direction) < 0.001) { 
+        finalTracedColor = reflected_color;
+    } else {
+        vec3 refracted_color = traceReflection(vWorldPos - N_hit * 0.001, refracted_direction, 100.0);
+        finalTracedColor = mix(refracted_color, reflected_color, schlick_value);
+    }
+    
+    vec3 localLighting = ambient + diffuse * 0.1 + specular * 0.1; 
+    
+    float attenuationFactor = 2.0 - uShoulderRef;
+
+    float normalizedFactor = uShoulderRef - 1.0;
+    float alphaRange = maxAlpha - minAlpha;
+    float finalAlpha = minAlpha + (normalizedFactor * alphaRange);
+    finalAlpha = clamp(finalAlpha, minAlpha, maxAlpha);
+
+    fragColor = vec4(ambient + diffuse + specular, finalAlpha);
+    return; 
+}
+
+  if (uObjectIndex == 0) {
+
+      if (N.y < 0.9) { 
+          fragColor = vec4(uAmbientColor * diffuseMaterial, 1.0);
+          return;
+      }
+
+      vec3 V_refl = normalize(uCameraPos - vWorldPos); 
+      vec3 R_refl = reflect(-V_refl, N);
+
+      mat3 viewRotation3x3 = mat3(uViewRotationMatrix);
+      vec3 rotated_R_refl = transpose(viewRotation3x3) * R_refl;
+
+      rotated_R_refl.z *= -1.0;
+      rotated_R_refl.x *= -1.0;
+      
+
+      vec3 reflectedColor = traceReflection(vWorldPos + N * 0.01, rotated_R_refl, 100.0);
+
+      
+      
+      float cosTheta = clamp(dot(V_refl, N), 0.0, 1.0); 
+      float R0 = 0.0;
+      float schlick_value = R0 + (1.0 - R0) * pow(1.0 - cosTheta, 5.0);
+
+      vec3 L = normalize(uLightWorldPos - vWorldPos);
+      float diffIntensity = max(dot(N, L), 0.0);
+      vec3 baseDiffuse = uLightColor * diffuseMaterial * diffIntensity * 0.5;
+      vec3 baseAmbient = uAmbientColor * diffuseMaterial;
+      vec3 baseLighting = baseAmbient + baseDiffuse;
+      
+      vec3 finalColor = mix(baseLighting, reflectedColor, schlick_value * lightScale); 
+
+
+      bool inShadow = computeShadow(vWorldPos);
+      if (inShadow) {
+          float shadowMixFactor = 0.7 * lightScale; 
+          finalColor = mix(finalColor, baseAmbient * 0.1, shadowMixFactor);
+      }
+
+      fragColor = vec4(finalColor, 1.0);
+      return; 
+  }
+
+  fragColor = vec4(ambient + diffuse + specular, alpha);
+  return;
+}
+</script>
+  <script src="primitives.js"></script>
+  <script src="transformations.js"></script>
+
+  <script>
+    function createShader(gl, type, source) {
+      const shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        console.error("Shader Compile Error:", gl.getShaderInfoLog(shader));
+        return null;
+      }
+      return shader;
+    }
+
+    function createProgram(gl, vsSource, fsSource) {
+      const vs = createShader(gl, gl.VERTEX_SHADER, vsSource);
+      const fs = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
+      if (!vs || !fs) return null;
+      const prog = gl.createProgram();
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        console.error("Program Link Error:", gl.getProgramInfoLog(prog));
+        return null;
+      }
+      return prog;
+    }
+
+    const canvas = document.getElementById("glcanvas");
+    const gl = canvas.getContext("webgl2");
+    if (!gl) console.error("WebGL2 not supported");
+    const vertEditor = document.getElementById("vertEditor");
+    const fragEditor = document.getElementById("fragEditor");
+    vertEditor.value = document.getElementById("vertex-shader").textContent;
+    fragEditor.value = document.getElementById("fragment-shader").textContent;
+
+    function transformPointByMat4(mat, point) {
+        const x = point[0], y = point[1], z = point[2];
+        const w = 1.0; 
+        const rx = mat[0] * x + mat[4] * y + mat[8] * z + mat[12] * w;
+        const ry = mat[1] * y + mat[5] * y + mat[9] * z + mat[13] * w;
+        const rz = mat[2] * x + mat[6] * y + mat[10] * z + mat[14] * w;
+        const rw = mat[3] * x + mat[7] * y + mat[11] * z + mat[15] * w;
+        return [rx / rw, ry / rw, rz / rw];
+    }
+    
+    let program, posLoc, colorLoc, normalLoc, 
+      uMVM, uPM, uMTM, uNormalMatrixLoc, uObjectIndexLoc, 
+      uAmbientColorLoc, uLightPosLoc, uLightColorLoc, uTimeLoc,
+      uEnableShadowLoc, uLightWorldPosLoc,
+      uShadowInvWorldLoc, uShadowTypeLoc, uShadowCountLoc,
+      uBaseReflectivityLoc, uShoulderRef;
+
+    function initShaderProgram() {
+      program = createProgram(gl, vertEditor.value, fragEditor.value);
+      if (!program) return;
+      gl.useProgram(program);
+      posLoc = gl.getAttribLocation(program, "aPosition");
+      colorLoc = gl.getAttribLocation(program, "aColor");
+      normalLoc = gl.getAttribLocation(program, "aNormal"); 
+      uMVM = gl.getUniformLocation(program, "uModelViewMatrix");
+      uPM  = gl.getUniformLocation(program, "uProjectionMatrix");
+      uMTM = gl.getUniformLocation(program, "uModelTransformationMatrix");
+      uNormalMatrixLoc = gl.getUniformLocation(program, "uNormalMatrix");
+      uObjectIndexLoc = gl.getUniformLocation(program, "uObjectIndex");
+      uAmbientColorLoc = gl.getUniformLocation(program, "uAmbientColor");
+      uLightPosLoc = gl.getUniformLocation(program, "uLightPos"); 
+      uLightColorLoc = gl.getUniformLocation(program, "uLightColor"); 
+      uTimeLoc = gl.getUniformLocation(program, "uTime");
+      uEnableShadowLoc   = gl.getUniformLocation(program, "uEnableShadow");
+      uLightWorldPosLoc  = gl.getUniformLocation(program, "uLightWorldPos");
+      uShadowInvWorldLoc = gl.getUniformLocation(program, "uShadowInvWorld[0]");
+      uShadowTypeLoc     = gl.getUniformLocation(program, "uShadowType[0]");
+      uShadowCountLoc    = gl.getUniformLocation(program, "uShadowCount");
+      uCameraPosLoc = gl.getUniformLocation(program, "uCameraPos");
+      uViewRotationMatrixLoc = gl.getUniformLocation(program, "uViewRotationMatrix");
+      uBaseReflectivityLoc = gl.getUniformLocation(program, "uBaseReflectivity");
+
+      uShoulderRef = gl.getUniformLocation(program, "uShoulderRef");
+    }
+
+    initShaderProgram();
+    vertEditor.onkeyup = initShaderProgram;
+    fragEditor.onkeyup = initShaderProgram;
+
+    function createGlObject(gl, positions, colors, normals, indices, baseScale=[1,1,1]) { 
+      const vbo = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+      gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+      const cbo = gl.createBuffer(); 
+      gl.bindBuffer(gl.ARRAY_BUFFER, cbo);
+      gl.bufferData(gl.ARRAY_BUFFER, colors, gl.STATIC_DRAW);
+      const nbo = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, nbo);
+      gl.bufferData(gl.ARRAY_BUFFER, normals, gl.STATIC_DRAW);
+      const ibo = gl.createBuffer();
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+      return { vbo, cbo, nbo, ibo, indexCount: indices.length, baseScale }; 
+    }
+
+    let accumulatedRotationMatrix, proj, startTime;
+    let mouseDown = false, lastX = -10, lastY;
+    let camX = 0, camY = 0, camZ = -20;
+    let sphereData, cylinderData, rootNode, cubeData;
+    let shoulderJointNode, lowerArmNode, wristJointNode, upperArmNode;
+    const BALL_SIZE = 12.0, ORBIT_RADIUS = -24.0, ORBIT_SPEED = 0.5;
+    const AMBIENT_COLOR = [0.1, 0.1, 0.1];
+    const BASE_LIGHT_INTENSITY = [1.5, 1.5, 1.5];
+    const LIGHT_BASE_COLOR = BASE_LIGHT_INTENSITY.slice();
+    const STATIC_LIGHT_POS_WORLD = [5.0, 10.0, 5.0]; 
+    let currentBaseReflectivity = 1.0;
+    let currentShoulderRef = 1.8;
+    let currentLightScale = 1.0;
+
+    function updateLightIntensity(scale) {
+        currentLightScale = scale;
+        for (let i = 0; i < 3; i++) {
+            LIGHT_BASE_COLOR[i] = BASE_LIGHT_INTENSITY[i] * scale;
+        }
+    }
+
+    function updateWorldMatrices(node, parentMTM) {
+      if (!node || !node.object) 
+        return;
+      let LTM = mat4Identity();
+      LTM = mat4Scale(LTM, node.object.baseScale);
+      if (node.rotation) {
+        if (node.rotation.axis === 'X') 
+          LTM = mat4RotateX(LTM, node.rotation.angle);
+        if (node.rotation.axis === 'Y') 
+          LTM = mat4RotateY(LTM, node.rotation.angle);
+        if (node.rotation.axis === 'Z') 
+          LTM = mat4RotateZ(LTM, node.rotation.angle);
+      }
+      LTM = mat4Translate(LTM, node.translation || [0,0,0]);
+      const MTM = multiplyMat4(parentMTM, LTM);
+      node.worldMTM = MTM;
+      if (node.children) {
+        node.children.forEach(child => updateWorldMatrices(child, MTM));
+      }
+    }
+
+    function drawModel(node, parentMTM, isTransparentPass) {
+      if (!node.object || !node.object.vbo)
+       return;
+      const isObjectTransparent = (node.index === 1); 
+      let LTM = mat4Identity();
+      LTM = mat4Scale(LTM, node.object.baseScale);
+      if (node.rotation) {
+        if (node.rotation.axis === 'X') 
+          LTM = mat4RotateX(LTM, node.rotation.angle);
+        if (node.rotation.axis === 'Y') 
+          LTM = mat4RotateY(LTM, node.rotation.angle);
+        if (node.rotation.axis === 'Z') 
+          LTM = mat4RotateZ(LTM, node.rotation.angle);
+      }
+      LTM = mat4Translate(LTM, node.translation || [0,0,0]);
+      const MTM = multiplyMat4(parentMTM, LTM);
+      
+      
+      let shouldDraw = false;
+      if (isTransparentPass && isObjectTransparent) {
+          shouldDraw = true;
+      } else if (!isTransparentPass && !isObjectTransparent) {
+          shouldDraw = true; 
+      }
+
+
+      if (shouldDraw) {
+        const NTM = mat4InverseTranspose(MTM);
+        gl.uniformMatrix4fv(uNormalMatrixLoc, false, NTM);
+        gl.uniform1i(uObjectIndexLoc, node.index);
+        gl.uniformMatrix4fv(uMTM, false, MTM);
+        const obj = node.object;
+        gl.bindBuffer(gl.ARRAY_BUFFER, obj.vbo);
+        gl.enableVertexAttribArray(posLoc);
+        gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+        gl.bindBuffer(gl.ARRAY_BUFFER, obj.cbo);
+        gl.enableVertexAttribArray(colorLoc);
+        gl.vertexAttribPointer(colorLoc, 3, gl.FLOAT, false, 0, 0);
+        gl.bindBuffer(gl.ARRAY_BUFFER, obj.nbo);
+        gl.enableVertexAttribArray(normalLoc); 
+        gl.vertexAttribPointer(normalLoc, 3, gl.FLOAT, false, 0, 0);
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, obj.ibo);
+        gl.drawElements(gl.TRIANGLES, obj.indexCount, gl.UNSIGNED_SHORT, 0);
+      }
+      if (node.children) node.children.forEach(child => drawModel(child, MTM, isTransparentPass));
+    }
+
+   function render(currentTime) {
+      if (!program) 
+        return;
+      gl.enable(gl.DEPTH_TEST);
+      gl.clearColor(0.1, 0.1, 0.1, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      const viewRotationMatrix = multiplyMat4(mat4Translate(mat4Identity(), [camX, camY, camZ]), 
+        accumulatedRotationMatrix);
+      gl.uniformMatrix4fv(uPM, false, proj);
+      gl.uniformMatrix4fv(uMVM, false, viewRotationMatrix);
+      const elapsed = 0.0;
+      const LIGHT_POS_WORLD = STATIC_LIGHT_POS_WORLD.slice();
+      gl.uniform3fv(uAmbientColorLoc, AMBIENT_COLOR);
+      gl.uniform3fv(uLightColorLoc, LIGHT_BASE_COLOR);
+      gl.uniform3fv(uLightPosLoc, LIGHT_POS_WORLD); 
+      gl.uniform3fv(uLightWorldPosLoc, LIGHT_POS_WORLD);
+      gl.uniform1i(uEnableShadowLoc, 1);
+      gl.uniform1f(uBaseReflectivityLoc, currentBaseReflectivity);
+      gl.uniform1f(uShoulderRef, currentShoulderRef);
+
+      gl.uniform3fv(gl.getUniformLocation(program, "uCameraPos"), [camX, camY, camZ]);
+      gl.uniformMatrix4fv(uViewRotationMatrixLoc, false, accumulatedRotationMatrix);
+      updateWorldMatrices(rootNode, mat4Identity());
+      const shadowNodes = [shoulderJointNode, wristJointNode, lowerArmNode, upperArmNode];
+      const reflectionNodes = [shoulderJointNode, wristJointNode, lowerArmNode, upperArmNode];
+      const shadowCount = shadowNodes.length;
+      const shadowTypes = new Int32Array(shadowCount);
+      const invMats = new Float32Array(16 * shadowCount);
+
+      for (let i = 0; i < shadowCount; ++i) {
+        const n = shadowNodes[i];
+        if (n === shoulderJointNode || n === wristJointNode) {
+          shadowTypes[i] = 0;
+        } else if (n === lowerArmNode) {
+          shadowTypes[i] = 1;
+        } else if(n === upperArmNode){
+          shadowTypes[i] = 2;
+        }
+          else{
+          shadowTypes[i] = 1;
+        }
+        
+        const wmtm = shadowNodes[i].worldMTM;
+        const inv = mat4Inverse(wmtm); 
+        if (inv) {
+            for (let j = 0; j < 16; ++j) {
+                invMats[i*16 + j] = inv[j];
+            }
+        } else {
+             for (let j = 0; j < 16; ++j) {
+                invMats[i*16 + j] = (j % 5 == 0) ? 1.0 : 0.0;
+             }
+        }
+      }
+
+      gl.uniform1i(uShadowCountLoc, shadowCount);
+      gl.uniformMatrix4fv(uShadowInvWorldLoc, false, invMats);
+      gl.uniform1iv(uShadowTypeLoc, shadowTypes);
+
+      const reflCount = reflectionNodes.length;
+      const reflTypes = new Int32Array(reflCount);
+      const reflInv   = new Float32Array(16 * reflCount);
+
+      for (let i = 0; i < reflCount; i++) {
+        const n = reflectionNodes[i];
+        if (n === rootNode || n=== upperArmNode) 
+          reflTypes[i] = 2;
+        else if (n === shoulderJointNode || n === wristJointNode)
+          reflTypes[i] = 0;
+        else 
+          reflTypes[i] = 1;
+        const inv = mat4Inverse(n.worldMTM);
+        for (let j = 0; j < 16; j++)
+          reflInv[i*16 + j] = inv[j];
+      }
+
+      gl.disable(gl.BLEND);
+      gl.depthMask(true); 
+      drawModel(rootNode, mat4Identity(), false); 
+      gl.uniform1i(uShadowCountLoc, reflCount);
+      gl.uniformMatrix4fv(uShadowInvWorldLoc, false, reflInv);
+      gl.uniform1iv(uShadowTypeLoc, reflTypes);
+
+      gl.depthMask(false); 
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+      drawModel(rootNode, mat4Identity(), true); 
+      gl.depthMask(true); 
+      gl.disable(gl.BLEND);
+      requestAnimationFrame(render);
+    }
+
+    window.onload = function () {
+      accumulatedRotationMatrix = mat4Identity();
+      proj = perspective(Math.PI/4, canvas.width/canvas.height, 0.1, 100);
+      startTime = performance.now();
+      const BASE_HEIGHT=1.0, SEG_LENGTH=2.0, SEG_THICKNESS=0.5, JOINT_RADIUS=0.8, FINGER_LENGTH=2.0, FINGER_THICKNESS=0.3;
+      sphereData = generateSphereData(20,20,1.0);
+      cylinderData = generateCylinderData(24,1.0,1.0);
+      cubeData = generateCubeData(1.0);
+      const baseObj          = createGlObject(gl, cubeData.positions, cubeData.colors, cubeData.normals, cubeData.indices, [9.0, 0.5, 9.0]);
+      const shoulderJointObj = createGlObject(gl, sphereData.positions, sphereData.colors, sphereData.normals, sphereData.indices, [JOINT_RADIUS*0.8/3,JOINT_RADIUS*4.8,JOINT_RADIUS*0.8/3]);
+      const lowerArmObj      = createGlObject(gl, cylinderData.positions, cylinderData.colors, cylinderData.normals, cylinderData.indices, [SEG_THICKNESS,SEG_LENGTH/4,SEG_THICKNESS]);
+      const elbowJointObj    = createGlObject(gl, sphereData.positions, sphereData.colors, sphereData.normals, sphereData.indices, [JOINT_RADIUS*0.8,JOINT_RADIUS*0.8,JOINT_RADIUS*0.8]);
+      const upperArmObj      = createGlObject(gl, cubeData.positions, cubeData.colors, cubeData.normals, cubeData.indices, [SEG_THICKNESS*0.8,SEG_LENGTH*1.0,SEG_THICKNESS*0.8]);
+
+      upperArmNode      = {object: upperArmObj, index:4, translation:[0,SEG_LENGTH*0.25,0], rotation:{axis:'X',angle:0}};
+      wristJointNode    = {object: elbowJointObj, index:3, translation:[0,SEG_LENGTH*0.5,0], rotation:{axis:'Y',angle:0,jointId:'joint3'}, children:[upperArmNode]};
+      lowerArmNode      = {object: lowerArmObj, index:2, translation:[0,SEG_LENGTH*0.75,0], rotation:{axis:'X',angle:0,jointId:'joint2'}, children:[wristJointNode]};
+      shoulderJointNode = {object: shoulderJointObj, index:1, translation:[0,BASE_HEIGHT-0.5,0], rotation:{axis:'Y',angle:0,jointId:'joint1'}, children:[lowerArmNode]};
+      rootNode          = {object: baseObj, index:0, translation:[0,BASE_HEIGHT*0.5-5,0], children:[shoulderJointNode]};
+      
+      document.querySelectorAll('#controls input[type="range"]').forEach(s=>{
+        s.addEventListener('input',e=>{
+          const id=e.target.dataset.jointId;
+          const value=parseFloat(e.target.value);
+          
+          if (e.target.id === 'light-intensity-slider') {
+              updateLightIntensity(value);
+              return;
+          }
+          if (e.target.id === 'shoulder-ior-slider') {
+              currentShoulderRef = value;
+              return;
+          }
+          
+          
+          const u=n=>{
+            if(n.rotation && n.rotation.jointId === id) {
+              n.rotation.angle = value * Math.PI/180; 
+            } else if (id === 'joint4' && n.index === 4) {
+              if (!n.originalScale) {
+                  n.originalScale = n.object.baseScale[1]; 
+              }
+              n.object.baseScale[1] = n.originalScale * value;
+            }
+            if(n.children)n.children.forEach(u);
+          };
+          u(rootNode);
+        });
+      });
+
+      canvas.addEventListener('mousedown',e=>{mouseDown=true;lastX=e.clientX;lastY=e.clientY;});
+      canvas.addEventListener('mouseup',()=>mouseDown=false);
+      canvas.addEventListener('mousemove',e=>{
+        if(!mouseDown)return;
+        const dx=e.clientX-lastX,dy=e.clientY-lastY;
+        const rot= multiplyMat4(mat4RotateY(mat4RotateX(mat4Identity(),dy*0.01),dx*0.01),accumulatedRotationMatrix);
+        accumulatedRotationMatrix=rot;
+        lastX=e.clientX;lastY=e.clientY;
+      });
+
+      document.addEventListener('keydown',e=>{
+        const s=0.5;
+        if(e.key==='ArrowUp')camY+=s;
+        if(e.key==='ArrowDown')camY-=s;
+        if(e.key==='ArrowLeft')camX-=s;
+        if(e.key==='ArrowRight')camX+=s;
+        if(e.key==='w')camZ+=s;
+        if(e.key==='s')camZ-=s;
+      });
+
+      requestAnimationFrame(render);
+    };
+  </script>
+</body>
+</html>
+  

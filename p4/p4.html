@@ -1,0 +1,587 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <title>UNM CS 412/512 HW4</title>
+  <style>
+    body { 
+      background: #111; 
+      color: #ccc;
+      font-family: monospace; 
+    }
+    textarea { 
+      background: #222; 
+      color: #0f0; 
+      font: 14px monospace; 
+      width: 400px; 
+      height: 250px; 
+    }
+    canvas { 
+      border: 1px solid #444; 
+    }
+    #controls { 
+      margin-top: 15px; 
+      padding: 10px; 
+      border: 1px solid #444; 
+      border-radius: 5px; 
+      background: #222; 
+    }
+    .joint-control { 
+      margin-bottom: 10px; 
+      padding: 5px; 
+      border-left: 3px solid #00ffaa;
+    }
+    #controls label, #controls input { 
+      margin-right: 10px; 
+      margin-bottom: 5px; 
+      display: inline-block; 
+    }
+    #controls input[type="range"] { 
+      width: 150px; 
+      vertical-align: middle; 
+    }
+    #lighting-controls { 
+      margin-top: 10px; 
+      display: flex; 
+      flex-wrap: wrap; 
+      gap: 10px; 
+    }
+    .slider-control { 
+      margin-top: 10px; 
+      width: 100%; 
+    }
+  </style>
+</head>
+
+<body>
+  <h2>Robotic Arm - Hierarchical Model - Including Shading and Lighting</h2>
+  <p>Use mouse to drag and rotate the scene. Use arrow keys and w, s keys to move the camera.</p>
+  <p>Please Move The Shoulder Joint (Level 2) To See The Changes In The Base Joint (Level 1) Rotation.</p>
+
+  <div style="display:flex;gap:10px;align-items:flex-start;">
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <div>
+        <b>Vertex Shader</b><br>
+        <textarea id="vertEditor"></textarea>
+      </div>
+      <div>
+        <b>Fragment Shader</b><br>
+        <textarea id="fragEditor"></textarea>
+      </div>
+    </div>
+    <div>
+      <canvas id="glcanvas" width="600" height="600"></canvas>
+      <div id="controls">
+        <div class="joint-control">
+          <b>Base Joint (Level 1 Movement)</b>
+          <label for="joint1-slider">Y-Rotation:</label>
+          <input type="range" id="joint1-slider" data-joint-id="joint1" min="-180" max="180" value="0">
+        </div>
+        <div class="joint-control">
+          <b>Shoulder Joint (Level 2 Movement)</b>
+          <label for="joint2-slider">X-Rotation:</label>
+          <input type="range" id="joint2-slider" data-joint-id="joint2" min="-15" max="15" value="0">
+        </div>
+        <div class="joint-control">
+          <b>Wrist Joint (Level 3 Movement)</b>
+          <label for="joint3-slider">Y-Rotation:</label>
+          <input type="range" id="joint3-slider" data-joint-id="joint3" min="-90" max="90" value="0">
+        </div>
+        <div id="lighting-controls">
+            <button id="ball-light-on-off-button">Ball Light Off</button>
+            <button id="flat-shading-button">Toggle Flat Shading (Current: Smooth)</button>
+            
+            <div class="slider-control">
+                <label for="shading-mode-slider">Shading Mode: <span id="shading-mode-label">Diffuse Only</span></label>
+                <input type="range" id="shading-mode-slider" min="0" max="2" value="0" step="1">
+            </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script id="vertex-shader" type="x-shader/x-vertex">#version 300 es
+in vec3 aPosition;
+in vec3 aColor;
+in vec3 aNormal;
+uniform mat4 uModelViewMatrix;
+uniform mat4 uProjectionMatrix;
+uniform mat4 uModelTransformationMatrix;
+uniform mat4 uNormalMatrix;
+
+out vec3 vColor;
+out vec3 vNormal;
+out vec3 vPosition;
+
+void main() {
+  vec4 worldPosition = uModelTransformationMatrix * vec4(aPosition, 1.0);
+  gl_Position = uProjectionMatrix * uModelViewMatrix * worldPosition;
+  vNormal = mat3(uNormalMatrix) * aNormal; 
+  vPosition = (uModelViewMatrix * worldPosition).xyz; 
+  vColor = aColor;
+}
+</script>
+
+  <script id="fragment-shader" type="x-shader/x-fragment">#version 300 es
+precision mediump float;
+in vec3 vColor;
+in vec3 vNormal; 
+in vec3 vPosition;
+
+uniform int uObjectIndex;
+uniform vec3 uAmbientColor;
+uniform vec3 uLight1Pos;
+uniform vec3 uLight1Color;
+
+uniform vec3 uLight2Pos;
+uniform vec3 uLight2Color;
+
+uniform vec3 uLight3Pos;
+uniform vec3 uLight3Color;
+
+uniform bool uIsDiffuse; 
+uniform bool uIsSpecular; 
+uniform bool uIsLightOn;
+uniform bool uIsFlatShading;
+
+out vec4 fragColor;
+void calculateLight(vec3 N, vec3 V, float shininess, vec3 diffuseMaterial,
+                    vec3 specularMaterial, vec3 lightPos, vec3 lightColor, inout vec3 diffuse, inout vec3 specular) {
+    vec3 L = normalize(lightPos - vPosition);
+
+    if (uIsDiffuse) {
+      float diffIntensity = max(dot(N, L), 0.0);
+      diffuse += lightColor * diffuseMaterial * diffIntensity;
+    }
+    if (uIsSpecular) {
+        vec3 R = reflect(-L, N);
+        float specIntensity = pow(max(dot(V, R), 0.0), shininess);
+        specular += lightColor * specularMaterial * specIntensity;
+    }
+}
+
+void main() {
+  vec3 color_base_diffuse  = vec3(0.5, 0.5, 0.0);
+  vec3 color_arm_diffuse   = vec3(0.9, 0.3, 0.0);
+  vec3 color_joint_diffuse = vec3(0.1, 0.3, 0.8);
+  vec3 color_end_diffuse   = vec3(0.8, 0.8, 0.2);
+  vec3 color_base_specular  = vec3(0.8);
+  vec3 color_arm_specular   = vec3(0.3);
+  vec3 color_joint_specular = vec3(1.0);
+  vec3 color_end_specular   = vec3(0.9);
+  float shininess_base  = 64.0;
+  float shininess_joint = 128.0;
+  float shininess_arm   = 16.0;
+  float shininess_end   = 80.0;
+  vec3 diffuseMaterial;
+  vec3 specularMaterial;
+  float shininess;
+  
+  if (uObjectIndex == 0) {
+      diffuseMaterial = color_base_diffuse;
+      specularMaterial = color_base_specular;
+      shininess = shininess_base;
+  }
+  else if (uObjectIndex == 1 || uObjectIndex == 3) { 
+      diffuseMaterial = color_joint_diffuse;
+      specularMaterial = color_joint_specular;
+      shininess = shininess_joint;
+  }
+  else if (uObjectIndex == 2 || uObjectIndex == 4) {
+      diffuseMaterial = color_arm_diffuse;
+      specularMaterial = color_arm_specular;
+      shininess = shininess_arm;
+  }
+  else if (uObjectIndex == 5 || uObjectIndex == 6) {
+      diffuseMaterial = color_end_diffuse;
+      specularMaterial = color_end_specular;
+      shininess = shininess_end;
+  }
+  else if (uObjectIndex == -1) {
+      diffuseMaterial = uLight2Color; 
+      specularMaterial = vec3(0.0);
+      shininess = 1.0;
+  }
+  else if (uObjectIndex == -2) {
+      diffuseMaterial = uLight3Color; 
+      specularMaterial = vec3(0.0);
+      shininess = 1.0;
+  }
+  else {
+      diffuseMaterial = vec3(1.0, 0.0, 1.0);
+      specularMaterial = vec3(0.0);
+      shininess = 1.0;
+  }
+  
+  if (!uIsLightOn) {
+      vec3 col = mix(vColor, diffuseMaterial, 0.9);
+      fragColor = vec4(col, 1.0);
+      return;
+  }
+  
+  vec3 N;
+  if (uIsFlatShading) {
+      vec3 p1 = dFdx(vPosition);
+      vec3 p2 = dFdy(vPosition);
+      N = normalize(vec3(
+        p1.y * p2.z - p1.z * p2.y,
+        p1.z * p2.x - p1.x * p2.z,
+        p1.x * p2.y - p1.y * p2.x
+    ));
+  } else {
+      N = normalize(vNormal);
+  }
+  
+  vec3 V = normalize(-vPosition);
+  vec3 ambient = uAmbientColor * diffuseMaterial;
+  vec3 diffuse = vec3(0.0);
+  vec3 specular = vec3(0.0);
+  calculateLight(N, V, shininess, diffuseMaterial, specularMaterial, uLight3Pos, uLight3Color, diffuse, specular);
+  calculateLight(N, V, shininess, diffuseMaterial, specularMaterial, uLight2Pos, uLight2Color, diffuse, specular);
+  vec3 finalColor = ambient + diffuse + specular;
+  fragColor = vec4(finalColor, 1.0);
+}
+</script>
+
+  <script src="primitives.js"></script>
+  <script src="transformations.js"></script>
+
+  <script>
+    function createShader(gl, type, source) {
+      const shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        console.error("Shader Compile Error:", gl.getShaderInfoLog(shader));
+        return null;
+      }
+      return shader;
+    }
+
+    function createProgram(gl, vsSource, fsSource) {
+      const vs = createShader(gl, gl.VERTEX_SHADER, vsSource);
+      const fs = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
+      if (!vs || !fs) return null;
+      const prog = gl.createProgram();
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        console.error("Program Link Error:", gl.getProgramInfoLog(prog));
+        return null;
+      }
+      return prog;
+    }
+
+    const canvas = document.getElementById("glcanvas");
+    const gl = canvas.getContext("webgl2");
+    if (!gl) console.error("WebGL2 not supported");
+
+    const vertEditor = document.getElementById("vertEditor");
+    const fragEditor = document.getElementById("fragment-shader");
+    vertEditor.value = document.getElementById("vertex-shader").textContent;
+    fragEditor.value = document.getElementById("fragment-shader").textContent;
+
+    function transformPointByMat4(mat, point) {
+        const x = point[0], y = point[1], z = point[2];
+        const w = 1.0; 
+        
+        const rx = mat[0] * x + mat[4] * y + mat[8] * z + mat[12] * w;
+        const ry = mat[1] * x + mat[5] * y + mat[9] * z + mat[13] * w;
+        const rz = mat[2] * x + mat[6] * y + mat[10] * z + mat[14] * w;
+        const rw = mat[3] * x + mat[7] * y + mat[11] * z + mat[15] * w;
+        return [rx / rw, ry / rw, rz / rw];
+    }
+    let program, posLoc, colorLoc, normalLoc, 
+        uMVM, uPM, uMTM, uNormalMatrixLoc, uObjectIndexLoc, 
+        uAmbientColorLoc, uLight1PosLoc, uLight1ColorLoc, uLight2PosLoc, uLight2ColorLoc,
+         uLight3PosLoc, uLight3ColorLoc, uIsDiffuseLoc, uIsSpecularLoc, uIsLightOnLoc, uIsFlatShadingLoc;
+
+    function initShaderProgram() {
+      program = createProgram(gl, vertEditor.value, fragEditor.value);
+      if (!program) return;
+      gl.useProgram(program);
+      posLoc = gl.getAttribLocation(program, "aPosition");
+      colorLoc = gl.getAttribLocation(program, "aColor");
+      normalLoc = gl.getAttribLocation(program, "aNormal");
+      uMVM = gl.getUniformLocation(program, "uModelViewMatrix");
+      uPM  = gl.getUniformLocation(program, "uProjectionMatrix");
+      uMTM = gl.getUniformLocation(program, "uModelTransformationMatrix");
+      uNormalMatrixLoc = gl.getUniformLocation(program, "uNormalMatrix");
+      uObjectIndexLoc = gl.getUniformLocation(program, "uObjectIndex");
+      uAmbientColorLoc = gl.getUniformLocation(program, "uAmbientColor");
+      uLight1PosLoc = gl.getUniformLocation(program, "uLight1Pos");
+      uLight1ColorLoc = gl.getUniformLocation(program, "uLight1Color");
+      uLight2PosLoc = gl.getUniformLocation(program, "uLight2Pos");
+      uLight2ColorLoc = gl.getUniformLocation(program, "uLight2Color");
+      uLight3PosLoc = gl.getUniformLocation(program, "uLight3Pos"); 
+      uLight3ColorLoc = gl.getUniformLocation(program, "uLight3Color");
+      uIsDiffuseLoc = gl.getUniformLocation(program, "uIsDiffuse");
+      uIsSpecularLoc = gl.getUniformLocation(program, "uIsSpecular");
+      uIsLightOnLoc = gl.getUniformLocation(program, "uIsLightOn");
+      uIsFlatShadingLoc = gl.getUniformLocation(program, "uIsFlatShading");
+    }
+
+    initShaderProgram();
+    vertEditor.onkeyup = initShaderProgram;
+    fragEditor.onkeyup = initShaderProgram;
+
+    let isLightOn = true; 
+    let isLight2On = false;
+    let isLight3On = true; 
+    let shadingMode = 0;
+    let isFlatShading = false;
+
+    function updateShadingMode(mode) {
+        shadingMode = mode;
+        if (mode === 0) {
+            isDiffuseOnly = true;
+            isSpecularOnly = false;
+            document.getElementById('shading-mode-label').textContent = "Diffuse Only";
+        } else if (mode === 1) {
+            isDiffuseOnly = false;
+            isSpecularOnly = true;
+            document.getElementById('shading-mode-label').textContent = "Specular Only";
+        } else if (mode === 2) {
+            isDiffuseOnly = true;
+            isSpecularOnly = true;
+            document.getElementById('shading-mode-label').textContent = "Diffuse + Specular";
+        }
+    }
+    
+    let isDiffuseOnly = true; 
+    let isSpecularOnly = false; 
+
+    function createGlObject(gl, positions, colors, normals, indices, baseScale=[1,1,1]) { 
+      const vbo = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+      gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+      const cbo = gl.createBuffer(); 
+      gl.bindBuffer(gl.ARRAY_BUFFER, cbo);
+      gl.bufferData(gl.ARRAY_BUFFER, colors, gl.STATIC_DRAW);
+      const nbo = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, nbo);
+      gl.bufferData(gl.ARRAY_BUFFER, normals, gl.STATIC_DRAW);
+      const ibo = gl.createBuffer();
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+      return { vbo, cbo, nbo, ibo, indexCount: indices.length, baseScale }; 
+    }
+
+    let accumulatedRotationMatrix, proj, startTime;
+    let mouseDown = false, lastX, lastY;
+    let camX = 0, camY = -2, camZ = -20;
+    let sphereData, cylinderData, coneData, rootNode, orbiterObj, staticLightObj;
+    const BALL_SIZE = 0.2, ORBIT_RADIUS = 8.0, ORBIT_SPEED = 0.5;
+    const AMBIENT_COLOR = [0.2, 0.2, 0.2];
+    const LIGHT1_POS_WORLD = [10.0, 10.0, 10.0]; 
+    const LIGHT1_COLOR = [0.0, 0.0, 0.0];
+    const LIGHT2_BASE_COLOR = [0.2, 0.8, 0.8]; 
+    const LIGHT3_BASE_COLOR = [2.0, 2.0, 2.0];
+    const LIGHT_OFF_COLOR = [0.0, 0.0, 0.0];
+    const ORBIT_Y_POS = 0.0;
+    const LIGHT3_POS_OFFSET = [0.0, 5.0, 0.0]; 
+
+    function drawModel(node, parentMTM) {
+      if (!node.object || !node.object.vbo) return;
+      let LTM = mat4Identity();
+      LTM = mat4Scale(LTM, node.object.baseScale);
+      if (node.rotation) {
+        if (node.rotation.axis === 'X') LTM = mat4RotateX(LTM, node.rotation.angle);
+        if (node.rotation.axis === 'Y') LTM = mat4RotateY(LTM, node.rotation.angle);
+        if (node.rotation.axis === 'Z') LTM = mat4RotateZ(LTM, node.rotation.angle);
+      }
+      LTM = mat4Translate(LTM, node.translation || [0,0,0]);
+      const MTM = multiplyMat4(parentMTM, LTM);
+      
+      const NTM = mat4InverseTranspose(MTM);
+      gl.uniformMatrix4fv(uNormalMatrixLoc, false, NTM);
+
+      gl.uniform1i(uObjectIndexLoc, node.index);
+      gl.uniformMatrix4fv(uMTM, false, MTM);
+      const obj = node.object;
+      
+      gl.bindBuffer(gl.ARRAY_BUFFER, obj.vbo);
+      gl.enableVertexAttribArray(posLoc);
+      gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+      
+      gl.bindBuffer(gl.ARRAY_BUFFER, obj.cbo);
+      gl.enableVertexAttribArray(colorLoc);
+      gl.vertexAttribPointer(colorLoc, 3, gl.FLOAT, false, 0, 0);
+      
+      gl.bindBuffer(gl.ARRAY_BUFFER, obj.nbo);
+      gl.enableVertexAttribArray(normalLoc);
+      gl.vertexAttribPointer(normalLoc, 3, gl.FLOAT, false, 0, 0);
+
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, obj.ibo);
+      gl.drawElements(gl.TRIANGLES, obj.indexCount, gl.UNSIGNED_SHORT, 0);
+      if (node.children) node.children.forEach(child => drawModel(child, MTM));
+    }
+
+    function render(currentTime) {
+      if (!program) return;
+      gl.enable(gl.DEPTH_TEST);
+      gl.clearColor(0.1, 0.1, 0.1, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      
+      const viewRotationMatrix = multiplyMat4(mat4Translate(mat4Identity(), [camX, camY, camZ]), accumulatedRotationMatrix);
+      
+      gl.uniformMatrix4fv(uPM, false, proj);
+      gl.uniformMatrix4fv(uMVM, false, viewRotationMatrix);
+      const elapsed = (currentTime - startTime) / 1000.0 * ORBIT_SPEED;
+      const x_light2_world = ORBIT_RADIUS * Math.cos(elapsed);
+      const z_light2_world = ORBIT_RADIUS * Math.sin(elapsed);
+      const LIGHT2_POS_WORLD = [x_light2_world, ORBIT_Y_POS, z_light2_world];
+
+      const LIGHT3_POS_WORLD = LIGHT3_POS_OFFSET; 
+
+      const LIGHT1_POS_VIEW = transformPointByMat4(viewRotationMatrix, LIGHT1_POS_WORLD);
+      const LIGHT2_POS_VIEW = transformPointByMat4(viewRotationMatrix, LIGHT2_POS_WORLD); 
+      const LIGHT3_POS_VIEW = transformPointByMat4(viewRotationMatrix, LIGHT3_POS_WORLD); 
+
+      const LIGHT2_FINAL_COLOR = isLight2On ? LIGHT2_BASE_COLOR : LIGHT_OFF_COLOR;
+      const LIGHT3_FINAL_COLOR = isLight3On ? LIGHT3_BASE_COLOR : LIGHT_OFF_COLOR;
+
+      gl.uniform3fv(uAmbientColorLoc, AMBIENT_COLOR);
+      gl.uniform3fv(uLight1PosLoc, LIGHT1_POS_VIEW); 
+      gl.uniform3fv(uLight1ColorLoc, LIGHT_OFF_COLOR); 
+      gl.uniform3fv(uLight2PosLoc, LIGHT2_POS_VIEW); 
+      gl.uniform3fv(uLight2ColorLoc, LIGHT2_FINAL_COLOR);
+      gl.uniform3fv(uLight3PosLoc, LIGHT3_POS_VIEW); 
+      gl.uniform3fv(uLight3ColorLoc, LIGHT3_FINAL_COLOR); 
+      gl.uniform1i(uIsLightOnLoc, isLightOn);
+      gl.uniform1i(uIsDiffuseLoc, isDiffuseOnly);
+      gl.uniform1i(uIsSpecularLoc, isSpecularOnly);
+      gl.uniform1i(uIsFlatShadingLoc, isFlatShading);
+
+      drawModel(rootNode, mat4Identity()); 
+      
+      if (orbiterObj) {
+          gl.uniform1i(uIsLightOnLoc, false); 
+          gl.uniform1i(uObjectIndexLoc, -1); 
+          let orbiterMTM = mat4Translate(mat4Identity(), LIGHT2_POS_WORLD);
+          orbiterMTM = mat4Scale(orbiterMTM, [BALL_SIZE, BALL_SIZE, BALL_SIZE]);
+          gl.uniformMatrix4fv(uMTM, false, orbiterMTM);
+          const obj = orbiterObj;
+          gl.bindBuffer(gl.ARRAY_BUFFER, obj.vbo);
+          gl.enableVertexAttribArray(posLoc);
+          gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+          gl.bindBuffer(gl.ARRAY_BUFFER, obj.cbo);
+          gl.enableVertexAttribArray(colorLoc);
+          gl.vertexAttribPointer(colorLoc, 3, gl.FLOAT, false, 0, 0);
+          gl.bindBuffer(gl.ARRAY_BUFFER, obj.nbo);
+          gl.enableVertexAttribArray(normalLoc);
+          gl.vertexAttribPointer(normalLoc, 3, gl.FLOAT, false, 0, 0);
+          gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, obj.ibo);
+          gl.drawElements(gl.TRIANGLES, obj.indexCount, gl.UNSIGNED_SHORT, 0);
+          gl.uniform1i(uIsLightOnLoc, isLightOn);
+      }
+      
+      if (staticLightObj) {
+          gl.uniform1i(uIsLightOnLoc, false); 
+          gl.uniform1i(uObjectIndexLoc, -2); 
+          let staticMTM = mat4Translate(mat4Identity(), LIGHT3_POS_WORLD);
+          staticMTM = mat4Scale(staticMTM, [BALL_SIZE, BALL_SIZE, BALL_SIZE]);
+          gl.uniformMatrix4fv(uMTM, false, staticMTM);
+          const obj = staticLightObj;
+          gl.bindBuffer(gl.ARRAY_BUFFER, obj.vbo);
+          gl.enableVertexAttribArray(posLoc);
+          gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+          gl.bindBuffer(gl.ARRAY_BUFFER, obj.cbo);
+          gl.enableVertexAttribArray(colorLoc);
+          gl.vertexAttribPointer(colorLoc, 3, gl.FLOAT, false, 0, 0);
+          gl.bindBuffer(gl.ARRAY_BUFFER, obj.nbo);
+          gl.enableVertexAttribArray(normalLoc);
+          gl.vertexAttribPointer(normalLoc, 3, gl.FLOAT, false, 0, 0);
+          gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, obj.ibo);
+          gl.drawElements(gl.TRIANGLES, obj.indexCount, gl.UNSIGNED_SHORT, 0);
+          gl.uniform1i(uIsLightOnLoc, isLightOn);
+      }
+
+      requestAnimationFrame(render);
+    };
+
+    window.onload = function () {
+      accumulatedRotationMatrix = mat4Identity();
+      proj = perspective(Math.PI/4, canvas.width/canvas.height, 0.1, 100);
+      startTime = performance.now();
+
+      const BASE_HEIGHT=1.0, SEG_LENGTH=2.0, SEG_THICKNESS=0.5, JOINT_RADIUS=0.8, FINGER_LENGTH=2.0, FINGER_THICKNESS=0.3;
+      sphereData = generateSphereData(20,20,1.0);
+      cylinderData = generateCylinderData(24,1.0,1.0);
+      coneData = generateConeData(24,1.0,1.0);
+
+      const baseObj = createGlObject(gl,cylinderData.positions,cylinderData.colors,cylinderData.normals,cylinderData.indices,[4.0,BASE_HEIGHT,4.0]);
+      const shoulderJointObj = createGlObject(gl,sphereData.positions,sphereData.colors,sphereData.normals,sphereData.indices,[JOINT_RADIUS,JOINT_RADIUS,JOINT_RADIUS]);
+      const lowerArmObj = createGlObject(gl,cylinderData.positions,cylinderData.colors,cylinderData.normals,cylinderData.indices,[SEG_THICKNESS,SEG_LENGTH,SEG_THICKNESS]);
+      const elbowJointObj = createGlObject(gl,sphereData.positions,sphereData.colors,sphereData.normals,sphereData.indices,[JOINT_RADIUS*0.8,JOINT_RADIUS*0.8,JOINT_RADIUS*0.8]);
+      const upperArmObj = createGlObject(gl,cylinderData.positions,cylinderData.colors,cylinderData.normals,cylinderData.indices,[SEG_THICKNESS,SEG_LENGTH,SEG_THICKNESS]);
+      const finger1Obj = createGlObject(gl,coneData.positions,coneData.colors,coneData.normals,coneData.indices,[FINGER_THICKNESS,FINGER_LENGTH,FINGER_THICKNESS]);
+      const finger2Obj = createGlObject(gl,coneData.positions,coneData.colors,coneData.normals,coneData.indices,[FINGER_THICKNESS,FINGER_LENGTH,FINGER_THICKNESS]);
+      
+      orbiterObj = createGlObject(gl,sphereData.positions,sphereData.colors,sphereData.normals,sphereData.indices,[BALL_SIZE,BALL_SIZE,BALL_SIZE]);
+      staticLightObj = createGlObject(gl,sphereData.positions,sphereData.colors,sphereData.normals,sphereData.indices,[BALL_SIZE,BALL_SIZE,BALL_SIZE]);
+
+      const finger1Node = {object:finger1Obj,index:5,translation:[0,FINGER_LENGTH*0.25,FINGER_THICKNESS/2],rotation:{axis:'Z',angle:0}};
+      const finger2Node = {object:finger2Obj,index:6,translation:[0,FINGER_LENGTH*0.25,-FINGER_THICKNESS/2],rotation:{axis:'Z',angle:0}};
+      const upperArmNode = {object:upperArmObj,index:4,translation:[0,SEG_LENGTH*0.5,0],rotation:{axis:'X',angle:0},children:[finger1Node,finger2Node]};
+      const wristJointNode = {object:elbowJointObj,index:3,translation:[0,SEG_LENGTH*0.5,0],rotation:{axis:'Y',angle:0,jointId:'joint3'},children:[upperArmNode]};
+      const lowerArmNode = {object:lowerArmObj,index:2,translation:[0,SEG_LENGTH*0.5,0],rotation:{axis:'X',angle:0,jointId:'joint2'},children:[wristJointNode]};
+      const shoulderJointNode = {object:shoulderJointObj,index:1,translation:[0,BASE_HEIGHT*0.5,0],rotation:{axis:'Y',angle:0,jointId:'joint1'},children:[lowerArmNode]};
+      rootNode = {object:baseObj,index:0,translation:[0,BASE_HEIGHT*0.5-5.0,0],children:[shoulderJointNode]};
+      
+      document.querySelectorAll('#controls input[type="range"]').forEach(s=>{
+        s.addEventListener('input',e=>{
+          const a=parseFloat(e.target.value)*Math.PI/180;
+          const id=e.target.dataset.jointId;
+          const u=n=>{if(n.rotation&&n.rotation.jointId===id)n.rotation.angle=a;if(n.children)n.children.forEach(u);};
+          u(rootNode);
+        });
+      });
+      
+      const flatShadingButton = document.getElementById('flat-shading-button');
+      const shadingModeSlider = document.getElementById('shading-mode-slider');
+      const ballLightOnOffButton = document.getElementById('ball-light-on-off-button'); // Button is back
+      updateShadingMode(0);
+      shadingModeSlider.addEventListener('input', (e) => {
+          updateShadingMode(parseInt(e.target.value));
+      });
+      
+      ballLightOnOffButton.addEventListener('click', () => {
+        isLight2On = !isLight2On;
+        ballLightOnOffButton.textContent = isLight2On ? "Ball Light On" : "Ball Light Off"; 
+      });
+
+      flatShadingButton.addEventListener('click', () => {
+        isFlatShading = !isFlatShading;
+        if (isFlatShading) {
+            flatShadingButton.textContent = "Toggle Flat Shading (Current: Flat)";
+        } else {
+            flatShadingButton.textContent = "Toggle Flat Shading (Current: Smooth)";}
+      });
+
+      canvas.addEventListener('mousedown',e=>{mouseDown=true;lastX=e.clientX;lastY=e.clientY;});
+      canvas.addEventListener('mouseup',()=>mouseDown=false);
+      canvas.addEventListener('mousemove',e=>{
+        if(!mouseDown)return;
+        const dx=e.clientX-lastX,dy=e.clientY-lastY;
+        const rot= multiplyMat4(mat4RotateY(mat4RotateX(mat4Identity(),dy*0.01),dx*0.01),accumulatedRotationMatrix);
+        accumulatedRotationMatrix=rot;
+        lastX=e.clientX;lastY=e.clientY; });
+
+      document.addEventListener('keydown',e=>{
+        const s=0.5;
+        if(e.key==='ArrowUp')camY+=s;
+        if(e.key==='ArrowDown')camY-=s;
+        if(e.key==='ArrowLeft')camX-=s;
+        if(e.key==='ArrowRight')camX+=s;
+        if(e.key==='w')camZ+=s;
+        if(e.key==='s')camZ-=s;
+      });
+
+      requestAnimationFrame(render);
+    };
+  </script>
+</body>
+</html>

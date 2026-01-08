@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <title>UNM CS 412/512 HW2 - Two Cubes and a Stick</title>
+  <style>
+    body {
+      background: #111;
+      color: #ccc;
+      font-family: monospace;
+    }
+
+    textarea {
+      background: #222;
+      color: #0f0;
+      font: 14px monospace;
+      width: 400px;
+      height: 250px;
+    }
+
+    canvas {
+      border: 1px solid #444;
+    }
+
+    #controls {
+      margin-top: 15px;
+      padding: 10px;
+      border: 1px solid #444;
+      border-radius: 5px;
+      background: #222;
+    }
+
+    .cube-control {
+      margin-bottom: 10px;
+      padding: 5px;
+      border-left: 3px solid #00ffaa;
+    }
+
+    #controls label, #controls input {
+      margin-right: 10px;
+      margin-bottom: 5px;
+      display: inline-block;
+    }
+
+    #controls input[type="range"] {
+      width: 150px;
+      vertical-align: middle;
+    }
+  </style>
+</head>
+
+<body>
+  <h2>Interactive Controls & Geometric Primitives</h2>
+  <p>Edit vertex and fragment shaders on the left to get the result instantly.<br>
+  Use mouse to drag and rotate the scene. <br>
+Use arrow keys and w, s keys to move the camera.<br>
+Save your code to source file if you want to save it.<br>
+Press F12 to see the console for debugging.</p>
+
+  <div style="display: flex; gap: 10px; align-items: flex-start;">
+    <div style="display: flex; flex-direction: column; gap: 10px;">
+      <div>
+        <b>Vertex Shader</b><br>
+        <textarea id="vertEditor"></textarea>
+      </div>
+      <div>
+        <b>Fragment Shader</b><br>
+        <textarea id="fragEditor"></textarea>
+      </div>
+    </div>
+    <div>
+      <canvas id="glcanvas" width="400" height="400"></canvas>
+
+      <div>
+        <div class="cube-control">
+            <label>
+              <input type="checkbox" id="cube1-radio" data-cube-index="0">
+              <b>Cube 1 (Left)</b>
+            </label>
+            <br>
+            <label for="cube1-slider">Rotation Speed:</label>
+            <input type="range" id="cube1-slider" data-cube-index="0" min="0" max="100" value="50">
+        </div>
+        
+        <div class="cube-control">
+            <label>
+              <input type="checkbox" id="cube2-radio" data-cube-index="1">
+              <b>Cube 2 (Right)</b>
+            </label>
+            <br>
+            <label for="cube2-slider">Rotation Speed:</label>
+            <input type="range" id="cube2-slider" data-cube-index="1" min="0" max="100" value="50">
+        </div>
+        
+        <button id="reset-motion-button">Reset All Motion</button>
+
+      </div>
+      
+    </div>
+  </div>
+
+  <!-- Vertex shader -->
+  <script id="vertex-shader" type="x-shader/x-vertex">#version 300 es
+in vec3 aPosition;
+in vec3 aColor;
+
+uniform float uTime;
+uniform mat4 uModelViewMatrix;
+uniform mat4 uProjectionMatrix;
+uniform mat4 uModelTransformationMatrix;
+
+out vec3 vColor;
+
+void main() {
+  gl_Position = uProjectionMatrix * uModelViewMatrix * uModelTransformationMatrix * vec4(aPosition,1.0);
+  vColor = aColor;
+}
+
+</script>
+<!-- Fragment Shader -->
+  <script id="fragment-shader" type="x-shader/x-fragment">#version 300 es
+precision mediump float;
+in vec3 vColor;
+uniform int uObjectIndex;
+
+out vec4 fragColor;
+
+void main() {
+  vec3 warm_cube1 = vec3(1.0, 0.4, 0.0);
+  vec3 warm_cube2 = vec3(0.0, 0.4, 1.0);
+  vec3 warm_stick = vec3(0.8, 1.0, 0.0);
+  
+  vec3 baseColor;
+  
+  if (uObjectIndex == 0) {
+    baseColor = warm_cube1;
+  } else if (uObjectIndex == 1) {
+    baseColor = warm_cube2;
+  } else { 
+    baseColor = warm_stick;
+  }
+
+  vec3 col = mix(vColor, baseColor, 0.4); 
+  fragColor = vec4(col, 1.0);
+}
+</script>
+
+  <script src="primitives.js"></script>
+  <script src="transformations.js"></script>
+
+  <script>
+    function createShader(gl, type, source) {
+      let shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        throw new Error(gl.getShaderInfoLog(shader));
+      }
+      return shader;
+    }
+
+    function createProgram(gl, vsSource, fsSource) {
+      let vs = createShader(gl, gl.VERTEX_SHADER, vsSource);
+      let fs = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
+      let prog = gl.createProgram();
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        throw new Error(gl.getProgramInfoLog(prog));
+      }
+      return prog;
+    }
+
+    const canvas = document.getElementById("glcanvas");
+    const gl = canvas.getContext("webgl2");
+    if (!gl) alert("WebGL2 not supported");
+
+    let vertEditor = document.getElementById("vertEditor");
+    let fragEditor = document.getElementById("fragEditor"); 
+    vertEditor.value = document.getElementById("vertex-shader").textContent;
+    fragEditor.value = document.getElementById("fragment-shader").textContent;
+
+    let program, posLoc, colorLoc, uMVM, uPM, uMTM, timeLoc, uObjectIndexLoc; 
+
+    function initShaderProgram() {
+      try {
+        program = createProgram(gl, vertEditor.value, fragEditor.value); 
+        gl.useProgram(program);
+        posLoc = gl.getAttribLocation(program, "aPosition");
+        colorLoc = gl.getAttribLocation(program, "aColor");
+        timeLoc = gl.getUniformLocation(program, "uTime");
+        uMVM = gl.getUniformLocation(program, "uModelViewMatrix");
+        uPM = gl.getUniformLocation(program, "uProjectionMatrix");
+        uMTM = gl.getUniformLocation(program, "uModelTransformationMatrix");
+        uObjectIndexLoc = gl.getUniformLocation(program, "uObjectIndex");
+      } catch (e) { console.error(e); }
+    }
+    initShaderProgram();
+    vertEditor.onkeyup = initShaderProgram;
+    fragEditor.onkeyup = initShaderProgram;
+    
+    function createGlObject(gl, positions, colors, indices, baseScale = [1.0, 1.0, 1.0]) {
+        const vbo = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+        gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+
+        const nbo = gl.createBuffer();
+        gl.bindBuffer(gl.ARRAY_BUFFER, nbo);
+        gl.bufferData(gl.ARRAY_BUFFER, colors, gl.STATIC_DRAW);
+
+        const ibo = gl.createBuffer();
+        gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+        gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+
+        return {
+            vbo, nbo, ibo,
+            indexCount: indices.length,
+            rotationAngle: 0, 
+            translation: [0, 0, 0],
+            baseScale: baseScale,
+            isRotating: false, 
+            rotationSpeed: 0.005, 
+        };
+    }
+
+    let sceneObjects = [];
+    let accumulatedRotationMatrix;
+    let proj;
+    let startTime;
+
+    // Mouse and keyboard interactions
+    let mouseDown = false, lastX, lastY;
+    let camX = 0, camY = 0, camZ = -10; 
+    
+    canvas.addEventListener('mousedown', e => { mouseDown = true; lastX = e.clientX; lastY = e.clientY; });
+    canvas.addEventListener('mouseup', () => mouseDown = false);
+    canvas.addEventListener('mousemove', e => {
+      if (!mouseDown) return;
+      let dx = e.clientX - lastX;
+      let dy = e.clientY - lastY;
+      const rotationSpeed = 0.01;
+
+      let instantaneousRotX = mat4RotateX(mat4Identity(), dy * rotationSpeed);
+      let instantaneousRotY = mat4RotateY(mat4Identity(), dx * rotationSpeed);
+
+      let newRotation = multiplyMat4(instantaneousRotY, instantaneousRotX);
+      accumulatedRotationMatrix = multiplyMat4(newRotation, accumulatedRotationMatrix);
+
+      lastX = e.clientX; 
+      lastY = e.clientY;
+    });
+
+    document.addEventListener('keydown', e => {
+      const step = 0.2;
+      switch (e.key) {
+        case 'ArrowUp': camY -= step; break;
+        case 'ArrowDown': camY += step; break;
+        case 'ArrowLeft': camX += step; break;
+        case 'ArrowRight': camX -= step; break;
+        case 'w': camZ += step; break;
+        case 's': camZ -= step; break;
+      }
+    });
+
+    // Rotation and projection setup
+    let fov = Math.PI / 4, aspect = canvas.width / canvas.height, zNear = 0.1, zFar = 100;
+
+    function render() {
+      gl.enable(gl.DEPTH_TEST);
+      gl.clearColor(0, 0, 0, 1);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+
+      let modelViewMatrix = mat4Identity();
+      
+      let deltaTime = Date.now() - startTime;
+      
+      modelViewMatrix = mat4Translate(modelViewMatrix, [camX, camY, camZ]);
+      
+      gl.uniform1f(timeLoc, deltaTime/1000.0);
+      gl.uniformMatrix4fv(uPM, false, proj);
+      gl.uniformMatrix4fv(uMVM, false, modelViewMatrix);
+      
+      sceneObjects.forEach((obj, index) => {
+          
+          if (obj.isRotating) { 
+              obj.rotationAngle += obj.rotationSpeed * -1; 
+          }
+          
+          gl.uniform1i(uObjectIndexLoc, index);
+
+          let MTM = mat4Identity(); 
+          
+          if (index === 2) {
+              MTM = mat4Scale(MTM, obj.baseScale);
+              MTM = mat4Translate(MTM, obj.translation);
+          } else {
+              MTM = mat4Scale(MTM, obj.baseScale); 
+
+              let rotationMatrix = mat4RotateX(mat4Identity(), obj.rotationAngle);
+              MTM = multiplyMat4(MTM, rotationMatrix);
+              
+              MTM = mat4Translate(MTM, obj.translation); 
+          }
+          
+          MTM = multiplyMat4(accumulatedRotationMatrix, MTM);
+          
+          gl.uniformMatrix4fv(uMTM, false, MTM);
+
+          gl.bindBuffer(gl.ARRAY_BUFFER, obj.vbo);
+          gl.enableVertexAttribArray(posLoc);
+          gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+
+          gl.bindBuffer(gl.ARRAY_BUFFER, obj.nbo);
+          gl.enableVertexAttribArray(colorLoc);
+          gl.vertexAttribPointer(colorLoc, 3, gl.FLOAT, false, 0, 0);
+          
+          gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, obj.ibo);
+
+          gl.drawElements(gl.TRIANGLES, obj.indexCount, gl.UNSIGNED_SHORT, 0);
+      });
+    }
+
+
+    // Shapes setup
+    window.onload = function () {
+      
+      accumulatedRotationMatrix = mat4Identity(); 
+      startTime = Date.now();
+      proj = perspective(fov, aspect, zNear, zFar);
+      
+      const cube1 = createGlObject(gl, positions, colors, indices, [0.8, 0.8, 0.8]); 
+      cube1.translation = [-3.0, 0.0, 0.0]; 
+      
+      const cube2 = createGlObject(gl, positions, colors, indices, [0.8, 0.8, 0.8]); 
+      cube2.translation = [3.0, 0.0, 0.0]; 
+      
+      const stick = createGlObject(gl, positions, colors, indices, [3.0, 0.1, 0.1]);
+      stick.translation = [0.0, 0.0, 0.0]; 
+      
+      sceneObjects = [cube1, cube2, stick];
+
+
+      // Shapes motion setup
+      function handleRotationToggle(e) {
+          const index = parseInt(e.target.dataset.cubeIndex);
+          sceneObjects[index].isRotating = e.target.checked; 
+      }
+
+      function handleSpeedSlider(e) {
+          const index = parseInt(e.target.dataset.cubeIndex);
+          sceneObjects[index].rotationSpeed = parseFloat(e.target.value) / 100 * 0.02;
+      }
+      
+      function handleResetMotion() {
+          sceneObjects.forEach(obj => {
+              obj.rotationAngle = 0; 
+          });
+      }
+
+      // Shapes motion handeling UI
+      document.getElementById('cube1-radio').addEventListener('change', handleRotationToggle);
+      document.getElementById('cube1-slider').addEventListener('input', handleSpeedSlider);
+      
+      document.getElementById('cube2-radio').addEventListener('change', handleRotationToggle);
+      document.getElementById('cube2-slider').addEventListener('input', handleSpeedSlider);
+      
+      document.getElementById('reset-motion-button').addEventListener('click', handleResetMotion);
+
+      document.getElementById('cube1-radio').checked = false;
+      document.getElementById('cube2-radio').checked = false; 
+
+      handleRotationToggle({ target: document.getElementById('cube1-radio') }); 
+      handleRotationToggle({ target: document.getElementById('cube2-radio') }); 
+      handleSpeedSlider({ target: document.getElementById('cube1-slider') });
+      handleSpeedSlider({ target: document.getElementById('cube2-slider') });
+      
+      setInterval(render, 30);
+    }
+
+  </script>
+</body>
+
+</html>
