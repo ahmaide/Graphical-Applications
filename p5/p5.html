@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html>
+
+<head>
+  <meta charset="utf-8">
+  <title>UNM CS 412/512 HW5 - Texture Mapping</title>
+  <style>
+    body { 
+      background: #111; 
+      color: #ccc; 
+      font-family: monospace; 
+    }
+    textarea { 
+      background: #222; 
+      color: #0f0; 
+      font: 14px monospace; 
+      width: 400px; 
+      height: 250px; 
+    }
+    canvas { 
+      border: 1px solid #444; 
+    }
+    #controls { 
+      margin-top: 15px; 
+      padding: 10px; 
+      border: 1px solid #444; 
+      border-radius: 5px; 
+      background: #222; 
+    }
+    .joint-control { 
+      margin-bottom: 10px; 
+      padding: 5px; 
+      border-left: 3px solid #00ffaa; 
+    }
+    #controls label, #controls input { 
+      margin-right: 10px; 
+      margin-bottom: 5px; 
+      display: inline-block; 
+    }
+    #controls input[type="range"] { 
+      width: 150px; 
+      vertical-align: middle; 
+    }
+  </style>
+</head>
+
+<body>
+  <h2>HW5 - Texture Mapping (Manchester United)</h2>
+  <p>Please Move The Shoulder Joint (Level 2) To See The Changes In The Base Joint (Level 1) Rotation.</p>
+  <p>Normal Mapping is applied to the base (If you turn the object upside down more details will be shown)</p>
+  <p>Glory Glory Man United!</p>
+
+  <video id="videoTexture" src="images/mourinho.mp4" muted loop autoplay playsinline style="display:none"></video>
+
+  <div style="display:flex;gap:10px;align-items:flex-start;">
+    <div style="display:flex;flex-direction:column;gap:10px;">
+      <div>
+        <b>Vertex Shader</b><br>
+        <textarea id="vertEditor"></textarea>
+      </div>
+      <div>
+        <b>Fragment Shader</b><br>
+        <textarea id="fragEditor"></textarea>
+      </div>
+    </div>
+    <div>
+      <canvas id="glcanvas" width="600" height="600"></canvas>
+      <div id="controls">
+        <div class="joint-control">
+          <b>Base Joint (Level 1 Movement)</b>
+          <label for="joint1-slider">Y-Rotation:</label>
+          <input type="range" id="joint1-slider" data-joint-id="joint1" min="-180" max="180" value="0">
+        </div>
+        <div class="joint-control">
+          <b>Shoulder Joint (Level 2 Movement)</b>
+          <label for="joint2-slider">X-Rotation:</label>
+          <input type="range" id="joint2-slider" data-joint-id="joint2" min="-15" max="15" value="0">
+        </div>
+        <div class="joint-control">
+          <b>Wrist Joint (Level 3 Movement)</b>
+          <label for="joint3-slider">Y-Rotation:</label>
+          <input type="range" id="joint3-slider" data-joint-id="joint3" min="-90" max="90" value="0">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- VERTEX SHADER -->
+  <script id="vertex-shader" type="x-shader/x-vertex">#version 300 es
+in vec3 aPosition;
+in vec3 aColor;
+in vec3 aNormal;
+in vec2 aTexCoord;
+
+uniform mat4 uModelViewMatrix;
+uniform mat4 uProjectionMatrix;
+uniform mat4 uModelTransformationMatrix;
+uniform mat4 uNormalMatrix;
+
+out vec3 vColor;
+out vec2 vTexCoord;
+out vec3 vNormal;
+
+void main() {
+  vec4 worldPosition = uModelTransformationMatrix * vec4(aPosition, 1.0);
+  gl_Position = uProjectionMatrix * uModelViewMatrix * worldPosition;
+
+  vColor = aColor;
+  vNormal = mat3(uNormalMatrix) * aNormal;
+  vTexCoord = aTexCoord;
+}
+</script>
+
+  <!-- FRAGMENT SHADER -->
+  <script id="fragment-shader" type="x-shader/x-fragment">#version 300 es
+precision mediump float;
+
+in vec3 vColor;
+in vec2 vTexCoord;
+in vec3 vNormal;
+
+uniform int uObjectIndex;
+uniform sampler2D uSampler;
+
+out vec4 fragColor;
+
+void main() {
+  if (uObjectIndex == 4) {
+    vec2 uv = vec2(1.0 - vTexCoord.x, 1.0 - vTexCoord.y);
+    fragColor = texture(uSampler, uv);
+  } 
+  else if (uObjectIndex == 0) {
+    vec2 uv = vec2(1.0 - vTexCoord.x, 1.0 - vTexCoord.y);
+    vec4 texColor = texture(uSampler, uv);
+    fragColor = vec4(texColor.rgb * vec3(1.0, 0.2, 0.2), texColor.a);
+  } 
+  else if (uObjectIndex == 2) {
+    float ny = abs(normalize(vNormal).y);
+    if (ny < 0.5) {
+      vec2 uv = vec2(vTexCoord.x, 1.0 - vTexCoord.y);
+      fragColor = texture(uSampler, uv);
+    } 
+    else {
+      fragColor = vec4(1.0, 0.4, 0.4, 1.0);
+    }
+  } 
+  else {
+    vec3 objectColor;
+    if (uObjectIndex == 1)
+      objectColor = vec3(1.0, 0.1, 0.1);
+    else if (uObjectIndex == 3)
+      objectColor = vec3(1.0, 0.1, 0.1);
+    else if (uObjectIndex == 5)
+      objectColor = vec3(1.0, 0.1, 0.1);
+    else if (uObjectIndex == 6)
+      objectColor = vec3(1.0, 0.4, 0.4);
+    else
+      objectColor = vec3(1.0, 1.0, 1.0);
+
+    fragColor = vec4(objectColor, 1.0);
+  }
+}
+</script>
+
+  <script src="primitives.js"></script>
+  <script src="transformations.js"></script>
+  <script>
+    function createShader(gl, type, source) {
+      const shader = gl.createShader(type);
+      gl.shaderSource(shader, source);
+      gl.compileShader(shader);
+      if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+        console.error("Shader compile error:", gl.getShaderInfoLog(shader));
+        return null;
+      }
+      return shader;
+    }
+
+    function createProgram(gl, vsSource, fsSource) {
+      const vs = createShader(gl, gl.VERTEX_SHADER, vsSource);
+      const fs = createShader(gl, gl.FRAGMENT_SHADER, fsSource);
+      if (!vs || !fs) return null;
+      const prog = gl.createProgram();
+      gl.attachShader(prog, vs);
+      gl.attachShader(prog, fs);
+      gl.linkProgram(prog);
+      if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+        console.error("Program link error:", gl.getProgramInfoLog(prog));
+        return null;
+      }
+      return prog;
+    }
+
+    const canvas = document.getElementById("glcanvas");
+    const gl = canvas.getContext("webgl2");
+    if (!gl) console.error("WebGL2 not supported");
+
+    const vertEditor = document.getElementById("vertEditor");
+    const fragEditor = document.getElementById("fragEditor");
+    vertEditor.value = document.getElementById("vertex-shader").textContent;
+    fragEditor.value = document.getElementById("fragment-shader").textContent;
+
+    const video = document.getElementById("videoTexture");
+
+    let program;
+    let posLoc, colorLoc, normalLoc, texCoordLoc;
+    let uMVM, uPM, uMTM, uNormalMatrixLoc, uObjectIndexLoc, uSamplerLoc;
+
+    function initShaderProgram() {
+      program = createProgram(gl, vertEditor.value, fragEditor.value);
+      if (!program) return;
+      gl.useProgram(program);
+
+      posLoc = gl.getAttribLocation(program, "aPosition");
+      colorLoc = gl.getAttribLocation(program, "aColor");
+      normalLoc = gl.getAttribLocation(program, "aNormal");
+      texCoordLoc = gl.getAttribLocation(program, "aTexCoord");
+      uMVM = gl.getUniformLocation(program, "uModelViewMatrix");
+      uPM = gl.getUniformLocation(program, "uProjectionMatrix");
+      uMTM = gl.getUniformLocation(program, "uModelTransformationMatrix");
+      uNormalMatrixLoc = gl.getUniformLocation(program, "uNormalMatrix");
+      uObjectIndexLoc = gl.getUniformLocation(program, "uObjectIndex");
+      uSamplerLoc = gl.getUniformLocation(program, "uSampler");
+    }
+
+    initShaderProgram();
+    vertEditor.onkeyup = initShaderProgram;
+    fragEditor.onkeyup = initShaderProgram;
+    let textures = {};
+    const imageURLs = {
+      manU: "images/manu.jpg",
+      mapping: "images/mapping.jpg"
+    };
+
+    function loadTexture(gl, url, name) {
+      const texture = gl.createTexture();
+      textures[name] = texture;
+      gl.bindTexture(gl.TEXTURE_2D, texture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([255, 0, 0, 255]));
+      const image = new Image();
+
+      image.onload = () => {
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA,
+                      gl.RGBA, gl.UNSIGNED_BYTE, image);
+        gl.generateMipmap(gl.TEXTURE_2D);
+      };
+      image.src = url;
+    }
+    function initializeTextures() {
+      loadTexture(gl, imageURLs.manU, "manU");
+      loadTexture(gl, imageURLs.mapping, "mapping");
+    }
+    let videoTexture;
+    function initVideoTexture() {
+      videoTexture = gl.createTexture();
+      textures["animatedTexture"] = videoTexture;
+      gl.bindTexture(gl.TEXTURE_2D, videoTexture);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 255]));
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.bindTexture(gl.TEXTURE_2D, null);
+
+      video.play().catch(() => {
+        console.warn("Autoplay blocked, click to start video");
+      });
+      window.addEventListener("click", () => video.play());
+    }
+    function updateVideoTexture() {
+      if (!videoTexture) return;
+      if (video.readyState >= video.HAVE_CURRENT_DATA) {
+        gl.bindTexture(gl.TEXTURE_2D, videoTexture);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, video);
+      }
+    }
+
+    function createGlObject(gl, positions, colors, normals, texCoords, indices, baseScale = [1, 1, 1]) {
+      const vbo = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+      gl.bufferData(gl.ARRAY_BUFFER, positions, gl.STATIC_DRAW);
+      const cbo = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, cbo);
+      gl.bufferData(gl.ARRAY_BUFFER, colors, gl.STATIC_DRAW);
+      const nbo = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, nbo);
+      gl.bufferData(gl.ARRAY_BUFFER, normals, gl.STATIC_DRAW);
+      const tbo = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, tbo);
+      gl.bufferData(gl.ARRAY_BUFFER, texCoords, gl.STATIC_DRAW);
+      const ibo = gl.createBuffer();
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, ibo);
+      gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indices, gl.STATIC_DRAW);
+      return { vbo, cbo, nbo, tbo, ibo, indexCount: indices.length, baseScale };
+    }
+    let accumulatedRotationMatrix, proj;
+    let mouseDown = false, lastX = 0, lastY = 0;
+    let camX = 0, camY = -2, camZ = -20;
+    let sphereData, cylinderData, coneData, rootNode;
+
+    function drawModel(node, parentMTM) {
+      if (!node.object || !node.object.vbo) 
+        return;
+      if (node.index === 4) {
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, textures["manU"]);
+        gl.uniform1i(uSamplerLoc, 0);
+      } 
+      else if (node.index === 0) {
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, textures["mapping"]);
+        gl.uniform1i(uSamplerLoc, 0);
+      } 
+      else if (node.index === 2) {
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, textures["animatedTexture"]);
+        gl.uniform1i(uSamplerLoc, 0);
+      }
+
+      let LTM = mat4Identity();
+      LTM = mat4Scale(LTM, node.object.baseScale);
+      if (node.rotation) {
+        if (node.rotation.axis === "X") LTM = mat4RotateX(LTM, node.rotation.angle);
+        if (node.rotation.axis === "Y") LTM = mat4RotateY(LTM, node.rotation.angle);
+        if (node.rotation.axis === "Z") LTM = mat4RotateZ(LTM, node.rotation.angle);
+      }
+      LTM = mat4Translate(LTM, node.translation || [0, 0, 0]);
+      const MTM = multiplyMat4(parentMTM, LTM);
+      const NTM = mat4InverseTranspose(MTM);
+      gl.uniformMatrix4fv(uNormalMatrixLoc, false, NTM);
+      gl.uniform1i(uObjectIndexLoc, node.index);
+      gl.uniformMatrix4fv(uMTM, false, MTM);
+      const obj = node.object;
+      gl.bindBuffer(gl.ARRAY_BUFFER, obj.vbo);
+      gl.enableVertexAttribArray(posLoc);
+      gl.vertexAttribPointer(posLoc, 3, gl.FLOAT, false, 0, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, obj.cbo);
+      gl.enableVertexAttribArray(colorLoc);
+      gl.vertexAttribPointer(colorLoc, 3, gl.FLOAT, false, 0, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, obj.nbo);
+      gl.enableVertexAttribArray(normalLoc);
+      gl.vertexAttribPointer(normalLoc, 3, gl.FLOAT, false, 0, 0);
+      gl.bindBuffer(gl.ARRAY_BUFFER, obj.tbo);
+      gl.enableVertexAttribArray(texCoordLoc);
+      gl.vertexAttribPointer(texCoordLoc, 2, gl.FLOAT, false, 0, 0);
+      gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, obj.ibo);
+      gl.drawElements(gl.TRIANGLES, obj.indexCount, gl.UNSIGNED_SHORT, 0);
+
+      if (node.children) {
+        node.children.forEach(child => drawModel(child, MTM));
+      }
+    }
+
+    function render() {
+      if (!program) 
+        return;
+      gl.enable(gl.DEPTH_TEST);
+      gl.clearColor(0.1, 0.1, 0.1, 1.0);
+      gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+      updateVideoTexture();
+      const viewRotationMatrix = multiplyMat4(mat4Translate(mat4Identity(), [camX, camY, camZ]), accumulatedRotationMatrix);
+      gl.uniformMatrix4fv(uPM, false, proj);
+      gl.uniformMatrix4fv(uMVM, false, viewRotationMatrix);
+      drawModel(rootNode, mat4Identity());
+      requestAnimationFrame(render);
+    }
+    window.onload = function () {
+      accumulatedRotationMatrix = mat4Identity();
+      proj = perspective(Math.PI / 4, canvas.width / canvas.height, 0.1, 100);
+      initializeTextures();
+      initVideoTexture();
+      const BASE_HEIGHT = 1.0;
+      const SEG_LENGTH = 2.0;
+      const SEG_THICKNESS = 0.5;
+      const JOINT_RADIUS = 0.8;
+      const FINGER_LENGTH = 2.0;
+      const FINGER_THICKNESS = 0.3;
+      sphereData = generateSphereData(20, 20, 1.0);
+      cylinderData = generateCylinderData(24, 1.0, 1.0);
+      coneData = generateConeData(24, 1.0, 1.0);
+      const emptyTex = new Float32Array([]);
+      const baseObj = createGlObject(
+        gl, cylinderData.positions, cylinderData.colors,
+        cylinderData.normals, cylinderData.texCoords,
+        cylinderData.indices, [4.0, BASE_HEIGHT, 4.0]
+      );
+
+      const shoulderJointObj = createGlObject(
+        gl, sphereData.positions, sphereData.colors,
+        sphereData.normals, emptyTex,
+        sphereData.indices, [JOINT_RADIUS, JOINT_RADIUS, JOINT_RADIUS]
+      );
+
+      const lowerArmObj = createGlObject(
+        gl, cylinderData.positions, cylinderData.colors,
+        cylinderData.normals, cylinderData.texCoords,
+        cylinderData.indices, [SEG_THICKNESS, SEG_LENGTH, SEG_THICKNESS]
+      );
+
+      const elbowJointObj = createGlObject(
+        gl, sphereData.positions, sphereData.colors,
+        sphereData.normals, emptyTex,
+        sphereData.indices, [JOINT_RADIUS * 0.8, JOINT_RADIUS * 0.8, JOINT_RADIUS * 0.8]
+      );
+
+      const upperArmObj = createGlObject(
+        gl, cylinderData.positions, cylinderData.colors,
+        cylinderData.normals, cylinderData.texCoords,
+        cylinderData.indices, [SEG_THICKNESS, SEG_LENGTH, SEG_THICKNESS]
+      );
+
+      const finger1Obj = createGlObject(
+        gl, coneData.positions, coneData.colors,
+        coneData.normals, coneData.texCoords,
+        coneData.indices, [FINGER_THICKNESS, FINGER_LENGTH, FINGER_THICKNESS]
+      );
+
+      const finger2Obj = createGlObject(
+        gl, coneData.positions, coneData.colors,
+        coneData.normals, coneData.texCoords,
+        coneData.indices, [FINGER_THICKNESS, FINGER_LENGTH, FINGER_THICKNESS]
+      );
+
+      const finger1Node = {
+        object: finger1Obj,
+        index: 5,
+        translation: [0, FINGER_LENGTH * 0.25, FINGER_THICKNESS / 2],
+        rotation: { axis: "Z", angle: 0 }
+      };
+
+      const finger2Node = {
+        object: finger2Obj,
+        index: 6,
+        translation: [0, FINGER_LENGTH * 0.25, -FINGER_THICKNESS / 2],
+        rotation: { axis: "Z", angle: 0 }
+      };
+
+      const upperArmNode = {
+        object: upperArmObj,
+        index: 4,
+        translation: [0, SEG_LENGTH * 0.5, 0],
+        rotation: { axis: "X", angle: 0 },
+        children: [finger1Node, finger2Node]
+      };
+
+      const wristJointNode = {
+        object: elbowJointObj,
+        index: 3,
+        translation: [0, SEG_LENGTH * 0.5, 0],
+        rotation: { axis: "Y", angle: 0, jointId: "joint3" },
+        children: [upperArmNode]
+      };
+
+      const lowerArmNode = {
+        object: lowerArmObj,
+        index: 2,
+        translation: [0, SEG_LENGTH * 0.5, 0],
+        rotation: { axis: "X", angle: 0, jointId: "joint2" },
+        children: [wristJointNode]
+      };
+
+      const shoulderJointNode = {
+        object: shoulderJointObj,
+        index: 1,
+        translation: [0, BASE_HEIGHT * 0.5, 0],
+        rotation: { axis: "Y", angle: 0, jointId: "joint1" },
+        children: [lowerArmNode]
+      };
+
+      rootNode = {
+        object: baseObj,
+        index: 0,
+        translation: [0, BASE_HEIGHT * 0.5 - 5.0, 0],
+        children: [shoulderJointNode]
+      };
+
+      document.querySelectorAll("#controls input[type='range']").forEach(slider => {
+        slider.addEventListener("input", e => {
+          const angle = parseFloat(e.target.value) * Math.PI / 180.0;
+          const jointId = e.target.dataset.jointId;
+
+          function updateNode(node) {
+            if (node.rotation && node.rotation.jointId === jointId) {
+              node.rotation.angle = angle;
+            }
+            if (node.children) node.children.forEach(updateNode);
+          }
+          updateNode(rootNode);
+        });
+      });
+
+      canvas.addEventListener("mousedown", e => {
+        mouseDown = true;
+        lastX = e.clientX;
+        lastY = e.clientY;
+      });
+      canvas.addEventListener("mouseup", () => { mouseDown = false; });
+      canvas.addEventListener("mousemove", e => {
+        if (!mouseDown) 
+          return;
+        const dx = e.clientX - lastX;
+        const dy = e.clientY - lastY;
+        const rot = multiplyMat4(
+          mat4RotateY(mat4RotateX(mat4Identity(), dy * 0.01), dx * 0.01),
+          accumulatedRotationMatrix
+        );
+        accumulatedRotationMatrix = rot;
+        lastX = e.clientX;
+        lastY = e.clientY;
+      });
+
+      document.addEventListener("keydown", e => {
+        const s = 0.5;
+        if (e.key === "ArrowUp")    camY += s;
+        if (e.key === "ArrowDown")  camY -= s;
+        if (e.key === "ArrowLeft")  camX -= s;
+        if (e.key === "ArrowRight") camX += s;
+        if (e.key === "w")          camZ += s;
+        if (e.key === "s")          camZ -= s;
+      });
+      requestAnimationFrame(render);
+    };
+  </script>
+</body>
+</html>
